@@ -1,0 +1,16 @@
+{
+  "name": "resumable-agent-workflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitHub-ready packaging repo for an artifact-backed resumable agent workflow stack.",
+  "type": "module",
+  "scripts": {
+    "install:local": "bash scripts/install.sh",
+    "install:dry-run": "bash scripts/install.sh --dry-run",
+    "verify:repo": "bash scripts/verify-install.sh --repo-only",
+    "verify:install": "bash scripts/verify-install.sh"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

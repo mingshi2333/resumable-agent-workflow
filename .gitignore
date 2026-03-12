@@ -1,0 +1,5 @@
+.opencode/
+.serena/
+node_modules/
+dist/
+*.log
