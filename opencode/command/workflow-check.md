@@ -50,7 +50,7 @@ Normal path:
      - `export const workflow_archive_runtime`
      - `export const execution_dispatch_claim`
     - `export const execution_dispatch_result`
-    - `export const smoke_dispatch_parallel`
+    - `export const smoke_continuation_matrix`
    - `export const workflow_supervisor_runtime`
    - `export const workflow_continue_runtime`
    - `export const session_start`

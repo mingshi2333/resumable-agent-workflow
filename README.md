@@ -310,8 +310,10 @@ Clone the repo:
 
 ```bash
 git clone <your-repo-url>
-cd resumable-agent-workflow
+cd <repo-dir>
 ```
+
+Replace `<repo-dir>` with the directory name you actually cloned into.
 
 Install into your local environment:
 

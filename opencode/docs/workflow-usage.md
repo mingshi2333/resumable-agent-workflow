@@ -25,9 +25,11 @@ spec / handoff / review / execution artifact = 当前项目本地
 
 ```bash
 git clone <your-repo-url>
-cd resumable-agent-workflow
+cd <repo-dir>
 bash scripts/install.sh
 ```
+
+把 `<repo-dir>` 替换成你实际 clone 下来的目录名；fork 或自定义目标目录时不要直接照抄仓库名。
 
 安装后建议立刻验证一次：
 

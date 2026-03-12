@@ -2930,9 +2930,10 @@ export const ralplan_runtime = tool({
             )
           )
         : null
+      const combinedOk = (taskGraphLint ? taskGraphLint.ok : true) && (planningArtifactCheck ? planningArtifactCheck.ok : true)
       return JSON.stringify(
         {
-          ok: taskGraphLint ? taskGraphLint.ok : true,
+          ok: combinedOk,
           operation: args.operation,
           handoff: nextHandoff,
           continued,

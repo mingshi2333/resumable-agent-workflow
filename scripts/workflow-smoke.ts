@@ -47,40 +47,40 @@ async function main() {
   const stubRoot = path.join(process.cwd(), "node_modules", "@opencode-ai")
   const stubDir = path.join(stubRoot, "plugin")
   await cleanupSmokeArtifacts(process.cwd())
-  await mkdir(stubDir, { recursive: true })
-  await writeFile(
-    path.join(stubDir, "package.json"),
-    JSON.stringify({ name: "@opencode-ai/plugin", type: "module", exports: "./index.js" }, null, 2)
-  )
-  await writeFile(
-    path.join(stubDir, "index.js"),
-    [
-      "function chain(value = {}) {",
-      "  return {",
-      "    ...value,",
-      "    optional() { return this },",
-      "    nullable() { return this },",
-      "    describe() { return this },",
-      "  }",
-      "}",
-      "",
-      "function tool(definition) { return definition }",
-      "tool.schema = {",
-      "  object(shape) { return chain({ kind: 'object', shape }) },",
-      "  enum(values) { return chain({ kind: 'enum', values }) },",
-      "  string() { return chain({ kind: 'string' }) },",
-      "  boolean() { return chain({ kind: 'boolean' }) },",
-      "  array(item) { return chain({ kind: 'array', item }) },",
-      "  record(key, value) { return chain({ kind: 'record', key, value }) },",
-      "  any() { return chain({ kind: 'any' }) },",
-      "}",
-      "",
-      "export { tool }",
-      "",
-    ].join('\n')
-  )
 
   try {
+    await mkdir(stubDir, { recursive: true })
+    await writeFile(
+      path.join(stubDir, "package.json"),
+      JSON.stringify({ name: "@opencode-ai/plugin", type: "module", exports: "./index.js" }, null, 2)
+    )
+    await writeFile(
+      path.join(stubDir, "index.js"),
+      [
+        "function chain(value = {}) {",
+        "  return {",
+        "    ...value,",
+        "    optional() { return this },",
+        "    nullable() { return this },",
+        "    describe() { return this },",
+        "  }",
+        "}",
+        "",
+        "function tool(definition) { return definition }",
+        "tool.schema = {",
+        "  object(shape) { return chain({ kind: 'object', shape }) },",
+        "  enum(values) { return chain({ kind: 'enum', values }) },",
+        "  string() { return chain({ kind: 'string' }) },",
+        "  boolean() { return chain({ kind: 'boolean' }) },",
+        "  array(item) { return chain({ kind: 'array', item }) },",
+        "  record(key, value) { return chain({ kind: 'record', key, value }) },",
+        "  any() { return chain({ kind: 'any' }) },",
+        "}",
+        "",
+        "export { tool }",
+        "",
+      ].join('\n')
+    )
     const workflowModule = await import(pathToFileURL(path.join(process.cwd(), "opencode/tools/workflow.ts")).href)
     const result = smoke === "continuation-matrix"
       ? JSON.parse(await workflowModule.smoke_continuation_matrix.execute({}, context)) as Record<string, unknown>
@@ -93,7 +93,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
   } finally {
     await cleanupSmokeArtifacts(process.cwd())
-    await rm(stubRoot, { recursive: true, force: true })
+    await rm(stubDir, { recursive: true, force: true })
   }
 }
 
