@@ -156,7 +156,7 @@ What this means:
 
 ```mermaid
 flowchart TD
-    U[User request] --> S[Command entrypoints\nopencode/command/*.md]
+    U[User request] --> S[Command entrypoints\ninstalled as ~/.config/opencode/commands/*.md]
     S --> K[Skill protocols\nclaude/skills/*/SKILL.md]
     S --> T[Runtime control plane\nopencode/tools/workflow.ts]
     K --> T
@@ -253,7 +253,7 @@ flowchart LR
     C -->|writes| D[Runtime artifacts]
 
     subgraph Source
-      A1[opencode/command]
+      A1[opencode/command -> install to commands + compatibility command]
       A2[opencode/tools/workflow.ts]
       A3[claude/skills]
       A4[scripts]
@@ -363,8 +363,10 @@ bash scripts/verify-install.sh
 
 The installer currently copies:
 
-- `opencode/command/` -> `$OPENCODE_DIR/command/`
+- `opencode/command/` -> `$OPENCODE_DIR/commands/` (primary)
+- `opencode/command/` -> `$OPENCODE_DIR/command/` (compatibility mirror during transition)
 - `opencode/tools/` -> `$OPENCODE_DIR/tools/`
+- `opencode/docs/` -> `$OPENCODE_DIR/docs/`
 - `opencode/oh-my-opencode-slim.json` -> `$OPENCODE_DIR/oh-my-opencode-slim.json`
 - `claude/skills/` -> `$CLAUDE_DIR/skills/`
 
@@ -520,7 +522,7 @@ resumable-agent-workflow/
   - the runtime control plane
   - defines workflow artifact contracts, session behavior, validation, dispatch handling, verification, and archive logic
 - `opencode/command/*.md`
-  - slash-command entrypoints and command-level orchestration instructions
+  - packaged workflow command entrypoints; installer publishes them into `~/.config/opencode/commands/` and a compatibility `command/` mirror
 - `claude/skills/*/SKILL.md`
   - phase-specific reasoning and execution contracts for specialist agents
 - `scripts/install.sh`
@@ -536,6 +538,7 @@ If you change any of these, reinstall or copy them again into your local config:
 
 - `opencode/command/*.md`
 - `opencode/tools/workflow.ts`
+- `opencode/docs/workflow-usage.md`
 - `claude/skills/*/SKILL.md`
 - `opencode/oh-my-opencode-slim.json`
 

@@ -29,18 +29,21 @@ Normal path:
    - `bun`
    - `jq`
    - `opencode`
-5. Check required command files exist:
-   - `command/workflow-start.md`
-   - `command/deep-interview.md`
-   - `command/ralplan.md`
-   - `command/review-bridge.md`
-   - `command/autopilot.md`
-   - `command/workflow-verify.md`
-   - `command/workflow-archive.md`
-   - `command/workflow-init.md`
-   - `command/workflow-validate.md`
-   - `command/workflow-check.md`
-6. Check required runtime helper exports exist in `opencode/tools/workflow.ts` (installed as `tools/workflow.ts`):
+5. Check the global OpenCode workflow command surface exists:
+   - primary location: `~/.config/opencode/commands/`
+   - compatibility mirror accepted during transition: `~/.config/opencode/command/`
+   - required files:
+     - `workflow-start.md`
+     - `deep-interview.md`
+     - `ralplan.md`
+     - `review-bridge.md`
+     - `autopilot.md`
+     - `workflow-verify.md`
+     - `workflow-archive.md`
+     - `workflow-init.md`
+     - `workflow-validate.md`
+     - `workflow-check.md`
+6. Check required runtime helper exports exist in `~/.config/opencode/tools/workflow.ts`:
    - `export const startup_state`
    - `export const workflow_start_runtime`
    - `export const ralplan_runtime`
@@ -56,21 +59,21 @@ Normal path:
    - `export const session_start`
    - `export const session_status`
    - `export const session_result`
-7. Run documentation drift checks:
-   - `command/workflow-start.md` contains both `startup-<slug>.json` and `awaiting-confirmation`
-   - `command/workflow-e2e-smoke.md` contains `runtime-wrapper-first main path`
-   - `command/review-bridge.md` contains both `review-bridge` and `{{ARGUMENTS}}`
-   - `command/ralplan.md` contains `ralplan_runtime`
-   - `command/autopilot.md` contains `autopilot_runtime`
-   - `command/workflow-start.md` contains `workflow_start_runtime`
-   - `command/workflow-verify.md` contains `workflow_verify_runtime`
-   - `command/workflow-archive.md` contains `workflow_archive_runtime`
-   - `command/ralplan.md`, `command/review-bridge.md`, `command/autopilot.md`, `command/workflow-verify.md`, and `command/workflow-archive.md` mention `background_task`
+7. Run documentation drift checks against the active global command surface (prefer `~/.config/opencode/commands/*.md`, fall back to `~/.config/opencode/command/*.md` only if needed):
+   - `workflow-start.md` contains both `startup-<slug>.json` and `awaiting-confirmation`
+   - `workflow-e2e-smoke.md` contains `runtime-wrapper-first main path`
+   - `review-bridge.md` contains both `review-bridge` and `{{ARGUMENTS}}`
+   - `ralplan.md` contains `ralplan_runtime`
+   - `autopilot.md` contains `autopilot_runtime`
+   - `workflow-start.md` contains `workflow_start_runtime`
+   - `workflow-verify.md` contains `workflow_verify_runtime`
+   - `workflow-archive.md` contains `workflow_archive_runtime`
+   - `ralplan.md`, `review-bridge.md`, `autopilot.md`, `workflow-verify.md`, and `workflow-archive.md` mention `background_task`
    - `~/.claude/skills/deep-interview/SKILL.md` contains `runtime-backed command paths`
 
 Evaluation rules:
-- hard blocker: missing required artifact, failed `workflow_validate`, missing required directory/binary/helper export
-- soft warning: no current handoff, no linked review on latest handoff, or wording drift checks fail
+- hard blocker: missing required artifact, failed `workflow_validate`, missing required directory/binary/helper export, or missing global workflow command surface
+- soft warning: no current handoff, no linked review on latest handoff, wording drift checks fail, or only the compatibility `command/` mirror exists without the primary `commands/` directory
 - green: no hard blockers and no warnings
 - yellow: no hard blockers but one or more warnings
 - red: one or more hard blockers

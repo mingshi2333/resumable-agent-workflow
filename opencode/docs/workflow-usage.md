@@ -3,7 +3,8 @@
 这套 workflow 是“全局命令/skill/runtime + 项目本地 artifact”的结构：
 
 - 全局部分放在当前配置目录：
-  - `command/*.md`
+  - `commands/*.md`（主路径）
+  - `command/*.md`（兼容镜像，迁移期保留）
   - `tools/workflow.ts`
   - `~/.claude/skills/*`
 - 项目本地产物写在你当前打开的项目目录：
@@ -218,7 +219,7 @@ openspec/changes/<change-id>/
 你可以把它理解成：
 
 ```text
-command/*.md = 命令入口和协议
+commands/*.md = OpenCode 命令入口和协议
 skills/*     = agent 行为与推理协议
 tools/workflow.ts = 真正的 runtime / 状态机 / artifact control plane
 ```
@@ -269,7 +270,7 @@ tools/workflow.ts = 真正的 runtime / 状态机 / artifact control plane
 
 如果你刚更新过这些文件：
 
-- `command/*.md`
+- `commands/*.md`
 - `tools/workflow.ts`
 - `~/.claude/skills/*`
 

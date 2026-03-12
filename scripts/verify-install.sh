@@ -58,6 +58,13 @@ check_contains() {
   fi
 }
 
+check_command_dir() {
+  local dir="$1"
+  for command_file in "${COMMAND_FILES[@]}"; do
+    check_file "$dir/$command_file"
+  done
+}
+
 for arg in "$@"; do
   case "$arg" in
     --repo-only)
@@ -82,9 +89,8 @@ check_file "$ROOT_DIR/scripts/install.sh"
 check_file "$ROOT_DIR/scripts/workflow-smoke.ts"
 check_file "$ROOT_DIR/opencode/tools/workflow.ts"
 check_file "$ROOT_DIR/opencode/tools/workflow-model.ts"
-for command_file in "${COMMAND_FILES[@]}"; do
-  check_file "$ROOT_DIR/opencode/command/$command_file"
-done
+check_file "$ROOT_DIR/opencode/docs/workflow-usage.md"
+check_command_dir "$ROOT_DIR/opencode/command"
 for skill_dir in "${SKILL_DIRS[@]}"; do
   check_file "$ROOT_DIR/claude/skills/$skill_dir/SKILL.md"
 done
@@ -119,6 +125,7 @@ check_contains "$ROOT_DIR/opencode/command/workflow-init.md" 'openspec init --to
 check_contains "$ROOT_DIR/opencode/docs/workflow-usage.md" 'bash scripts/install.sh'
 check_contains "$ROOT_DIR/opencode/docs/workflow-usage.md" '/workflow-init'
 check_contains "$ROOT_DIR/opencode/docs/workflow-usage.md" 'openspec init --tools opencode .'
+check_contains "$ROOT_DIR/opencode/docs/workflow-usage.md" '`commands/*.md`'
 
 if [[ "$REPO_ONLY" -eq 1 ]]; then
   printf 'Repository packaging check passed.\n'
@@ -134,13 +141,19 @@ done
 
 check_file "$OPENCODE_DIR/tools/workflow.ts"
 check_file "$OPENCODE_DIR/tools/workflow-model.ts"
-for command_file in "${COMMAND_FILES[@]}"; do
-  check_file "$OPENCODE_DIR/command/$command_file"
-done
+check_file "$OPENCODE_DIR/docs/workflow-usage.md"
+check_command_dir "$OPENCODE_DIR/commands"
+check_command_dir "$OPENCODE_DIR/command"
 check_file "$OPENCODE_DIR/oh-my-opencode-slim.json"
 for skill_dir in "${SKILL_DIRS[@]}"; do
   check_file "$CLAUDE_DIR/skills/$skill_dir/SKILL.md"
 done
+
+check_contains "$OPENCODE_DIR/docs/workflow-usage.md" '`commands/*.md`'
+check_contains "$OPENCODE_DIR/commands/workflow-check.md" '~/.config/opencode/commands'
+check_contains "$OPENCODE_DIR/commands/workflow-check.md" '~/.config/opencode/tools/workflow.ts'
+check_contains "$OPENCODE_DIR/command/workflow-check.md" '~/.config/opencode/commands'
+check_contains "$OPENCODE_DIR/command/workflow-check.md" '~/.config/opencode/tools/workflow.ts'
 
 bun scripts/workflow-smoke.ts continuation-matrix >/dev/null
 bun scripts/workflow-smoke.ts invalid-graph >/dev/null

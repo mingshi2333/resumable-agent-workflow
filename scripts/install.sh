@@ -75,8 +75,10 @@ log "- source: $ROOT_DIR"
 log "- opencode target: $OPENCODE_DIR"
 log "- claude target: $CLAUDE_DIR"
 
+copy_tree "$ROOT_DIR/opencode/command" "$OPENCODE_DIR/commands"
 copy_tree "$ROOT_DIR/opencode/command" "$OPENCODE_DIR/command"
 copy_tree "$ROOT_DIR/opencode/tools" "$OPENCODE_DIR/tools"
+copy_tree "$ROOT_DIR/opencode/docs" "$OPENCODE_DIR/docs"
 copy_file "$ROOT_DIR/opencode/oh-my-opencode-slim.json" "$OPENCODE_DIR/oh-my-opencode-slim.json"
 copy_tree "$ROOT_DIR/claude/skills" "$CLAUDE_DIR/skills"
 
