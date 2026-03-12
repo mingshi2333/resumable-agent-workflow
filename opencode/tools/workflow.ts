@@ -1343,12 +1343,16 @@ export const init = tool({
     } else {
       try {
         await execFileAsync("openspec", ["init", "--tools", "opencode", "."], { cwd: root })
+        const initialized = (await textFileExists(openspecAgentsPath)) || (await textFileExists(openspecProjectPath))
         openspec = {
           ...openspec,
-          initialized: (await textFileExists(openspecAgentsPath)) || (await textFileExists(openspecProjectPath)),
-          available: true,
-          reason: "openspec initialized for opencode during workflow init",
+          initialized,
+          available: initialized,
+          reason: initialized
+            ? "openspec initialized for opencode during workflow init"
+            : "openspec init completed but expected artifacts were not created",
         }
+        if (!initialized) ok = false
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         const binaryMissing = /ENOENT|not found/i.test(message)
@@ -3193,13 +3197,6 @@ export const autopilot_runtime = tool({
           task_graph_state: graphState,
         }
       : null
-    const executionContextPath = await writeStageContext(root, handoffData, "execution_session", {
-      execution_target: target,
-      task_graph_path: taskGraphPath,
-      dispatch_plan_path: dispatchPlanPath,
-      approved_artifact: handoffData.approved_artifact || null,
-      ready_batch_count: (dispatchPlan as Record<string, unknown>).ready_batch_count || 0,
-    })
     const dispatchArtifact = materializeDispatchArtifact(
       handoffData,
       dispatchPlanPath || `.opencode/executions/dispatch-${(handoffData.slug as string) || "workflow"}.json`,
@@ -3212,11 +3209,7 @@ export const autopilot_runtime = tool({
       completedNodeIds,
       now
     )
-    await writeDispatchContexts(root, handoffData, dispatchRequests as ReturnType<typeof buildDispatchRequests>, {
-      execution_target: target,
-      task_graph_path: taskGraphPath,
-      approved_artifact: (handoffData.approved_artifact as string | undefined) || null,
-    })
+    let executionContextPath: string | null = null
     const nextExpectedInputFor = (session: ReturnType<typeof normalizeSessionSnapshot> | null) => {
       if (!session) return null
       if (session.state === "queued") return graphState.ready_node_ids.length > 0 ? "dispatch ready DAG nodes" : "execution kickoff"
@@ -3380,6 +3373,19 @@ export const autopilot_runtime = tool({
     if (invalidGraphError) {
       return JSON.stringify(invalidGraphError, null, 2)
     }
+
+    executionContextPath = await writeStageContext(root, handoffData, "execution_session", {
+      execution_target: target,
+      task_graph_path: taskGraphPath,
+      dispatch_plan_path: dispatchPlanPath,
+      approved_artifact: handoffData.approved_artifact || null,
+      ready_batch_count: (dispatchPlan as Record<string, unknown>).ready_batch_count || 0,
+    })
+    await writeDispatchContexts(root, handoffData, dispatchRequests as ReturnType<typeof buildDispatchRequests>, {
+      execution_target: target,
+      task_graph_path: taskGraphPath,
+      approved_artifact: (handoffData.approved_artifact as string | undefined) || null,
+    })
 
     const shouldReuse = !!existing && !isTerminalSessionState(existing.state)
     if (args.operation === "resume" && !shouldReuse) {

@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdir, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -33,6 +33,15 @@ async function cleanupSmokeArtifacts(root: string) {
   await Promise.all(smokeArtifacts.map((relativePath) => rm(path.join(root, relativePath), { recursive: true, force: true })))
 }
 
+async function pathExists(targetPath: string) {
+  try {
+    await stat(targetPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function main() {
   const smoke = process.argv[2] || "continuation-matrix"
   const context = {
@@ -46,41 +55,55 @@ async function main() {
 
   const stubRoot = path.join(process.cwd(), "node_modules", "@opencode-ai")
   const stubDir = path.join(stubRoot, "plugin")
+  const stubPackageJson = path.join(stubDir, "package.json")
+  const stubIndexJs = path.join(stubDir, "index.js")
+  const openspecDir = path.join(process.cwd(), "openspec")
+  const stubState = {
+    stubRootExisted: await pathExists(stubRoot),
+    stubDirExisted: await pathExists(stubDir),
+    packageJsonExisted: await pathExists(stubPackageJson),
+    indexJsExisted: await pathExists(stubIndexJs),
+    openspecDirExisted: await pathExists(openspecDir),
+  }
   await cleanupSmokeArtifacts(process.cwd())
 
   try {
     await mkdir(stubDir, { recursive: true })
-    await writeFile(
-      path.join(stubDir, "package.json"),
-      JSON.stringify({ name: "@opencode-ai/plugin", type: "module", exports: "./index.js" }, null, 2)
-    )
-    await writeFile(
-      path.join(stubDir, "index.js"),
-      [
-        "function chain(value = {}) {",
-        "  return {",
-        "    ...value,",
-        "    optional() { return this },",
-        "    nullable() { return this },",
-        "    describe() { return this },",
-        "  }",
-        "}",
-        "",
-        "function tool(definition) { return definition }",
-        "tool.schema = {",
-        "  object(shape) { return chain({ kind: 'object', shape }) },",
-        "  enum(values) { return chain({ kind: 'enum', values }) },",
-        "  string() { return chain({ kind: 'string' }) },",
-        "  boolean() { return chain({ kind: 'boolean' }) },",
-        "  array(item) { return chain({ kind: 'array', item }) },",
-        "  record(key, value) { return chain({ kind: 'record', key, value }) },",
-        "  any() { return chain({ kind: 'any' }) },",
-        "}",
-        "",
-        "export { tool }",
-        "",
-      ].join('\n')
-    )
+    if (!stubState.packageJsonExisted) {
+      await writeFile(
+        stubPackageJson,
+        JSON.stringify({ name: "@opencode-ai/plugin", type: "module", exports: "./index.js" }, null, 2)
+      )
+    }
+    if (!stubState.indexJsExisted) {
+      await writeFile(
+        stubIndexJs,
+        [
+          "function chain(value = {}) {",
+          "  return {",
+          "    ...value,",
+          "    optional() { return this },",
+          "    nullable() { return this },",
+          "    describe() { return this },",
+          "  }",
+          "}",
+          "",
+          "function tool(definition) { return definition }",
+          "tool.schema = {",
+          "  object(shape) { return chain({ kind: 'object', shape }) },",
+          "  enum(values) { return chain({ kind: 'enum', values }) },",
+          "  string() { return chain({ kind: 'string' }) },",
+          "  boolean() { return chain({ kind: 'boolean' }) },",
+          "  array(item) { return chain({ kind: 'array', item }) },",
+          "  record(key, value) { return chain({ kind: 'record', key, value }) },",
+          "  any() { return chain({ kind: 'any' }) },",
+          "}",
+          "",
+          "export { tool }",
+          "",
+        ].join('\n')
+      )
+    }
     const workflowModule = await import(pathToFileURL(path.join(process.cwd(), "opencode/tools/workflow.ts")).href)
     const result = smoke === "continuation-matrix"
       ? JSON.parse(await workflowModule.smoke_continuation_matrix.execute({}, context)) as Record<string, unknown>
@@ -94,7 +117,19 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
   } finally {
     await cleanupSmokeArtifacts(process.cwd())
-    await rm(stubDir, { recursive: true, force: true })
+    await Promise.all([
+      stubState.packageJsonExisted ? Promise.resolve() : rm(stubPackageJson, { force: true }),
+      stubState.indexJsExisted ? Promise.resolve() : rm(stubIndexJs, { force: true }),
+    ])
+    if (!stubState.stubDirExisted) {
+      await rm(stubDir, { recursive: true, force: true })
+    }
+    if (!stubState.stubRootExisted) {
+      await rm(stubRoot, { recursive: true, force: true })
+    }
+    if (!stubState.openspecDirExisted) {
+      await rm(openspecDir, { recursive: true, force: true })
+    }
   }
 }
 
