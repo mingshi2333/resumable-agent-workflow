@@ -87,7 +87,8 @@ async function main() {
       : await runInvalidGraphSmoke(workflowModule, context)
     if (result.ok !== true) {
       process.stderr.write(`${JSON.stringify(result, null, 2)}\n`)
-      process.exit(1)
+      process.exitCode = 1
+      return
     }
 
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)

@@ -1,7 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
 import {
@@ -100,6 +100,15 @@ async function removeFileIfExists(filePath: string) {
 async function textFileExists(filePath: string) {
   try {
     await readFile(filePath, "utf8")
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function pathExists(filePath: string) {
+  try {
+    await stat(filePath)
     return true
   } catch {
     return false
@@ -1307,6 +1316,8 @@ export const init = tool({
 
     const openspecAgentsPath = path.join(root, "openspec", "AGENTS.md")
     const openspecProjectPath = path.join(root, "openspec", "project.md")
+    const openspecDirPath = path.join(root, "openspec")
+    let ok = true
     let openspec = {
       initialized: false,
       already_present: false,
@@ -1316,7 +1327,12 @@ export const init = tool({
       reason: null as string | null,
     }
 
-    if (await textFileExists(openspecAgentsPath)) {
+    const openspecAlreadyPresent =
+      (await textFileExists(openspecAgentsPath)) ||
+      (await textFileExists(openspecProjectPath)) ||
+      (await pathExists(openspecDirPath))
+
+    if (openspecAlreadyPresent) {
       openspec = {
         ...openspec,
         initialized: true,
@@ -1335,18 +1351,20 @@ export const init = tool({
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
+        const binaryMissing = /ENOENT|not found/i.test(message)
         openspec = {
           ...openspec,
-          skipped: true,
-          available: !/ENOENT|not found/i.test(message),
-          reason: /ENOENT|not found/i.test(message)
+          skipped: binaryMissing,
+          available: !binaryMissing,
+          reason: binaryMissing
             ? "openspec binary not available; skipped openspec bootstrap"
             : `openspec init failed: ${message}`,
         }
+        if (!binaryMissing) ok = false
       }
     }
 
-    return JSON.stringify({ ok: true, root, dirs, openspec }, null, 2)
+    return JSON.stringify({ ok, root, dirs, openspec }, null, 2)
   },
 })
 
