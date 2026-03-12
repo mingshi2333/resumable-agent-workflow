@@ -10,5 +10,5 @@
     "allowSyntheticDefaultImports": true,
     "types": ["node"]
   },
-  "include": ["opencode/tools/**/*.ts"]
+  "include": ["opencode/tools/**/*.ts", "scripts/**/*.ts"]
 }

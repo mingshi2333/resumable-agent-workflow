@@ -18,7 +18,7 @@ Required flow:
 2. Use a fixed slug of `startup-smoke` and fixed paths:
    - handoff: `.opencode/handoffs/handoff-startup-smoke.json`
    - startup state: `.opencode/state/startup-startup-smoke.json`
-3. Call `workflow_startup_runtime(start)` with deterministic values:
+3. Call `workflow_start_runtime(start)` with deterministic values:
    - `workflow_id=startup-smoke`
    - request text describing startup smoke
    - summary source `startup-smoke`
@@ -28,9 +28,9 @@ Required flow:
    - startup status `awaiting-confirmation`
    - a startup summary with goal text and `recommended_next_stage`
    - a handoff with `startup_state_path` and aligned continuation metadata
-5. Call `workflow_startup_runtime(resume)` against the same handoff and verify it returns the same saved summary plus `next_expected_input=explicit confirmation or cancellation`.
-6. Call `workflow_startup_runtime(confirm)` against the same handoff.
-7. Call `workflow_workflow_continue_runtime` on that handoff and verify startup continuation stays on the `ralplan` lineage. This may appear in one of two valid ways:
+5. Call `workflow_start_runtime(resume)` against the same handoff and verify it returns the same saved summary plus `next_expected_input=explicit confirmation or cancellation`.
+6. Call `workflow_start_runtime(confirm)` against the same handoff and verify it returns an embedded `continued` result instead of requiring a second manual command.
+7. Call `workflow_continue_runtime` on that handoff and verify startup continuation stays on the `ralplan` lineage. This may appear in one of two valid ways:
    - the immediate continuation result resolves to `stage: "ralplan"`, or
    - the continued handoff already advanced past planning and now records the `ralplan` lineage via `planning_session.resume_command` or the consensus-plan / task-graph artifacts.
 8. Call `workflow_smoke_ralplan` with the same handoff to materialize the deterministic downstream planning artifact and graph without relying on a separate review continuation.

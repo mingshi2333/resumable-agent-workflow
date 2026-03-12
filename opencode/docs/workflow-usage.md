@@ -19,6 +19,28 @@
 spec / handoff / review / execution artifact = 当前项目本地
 ```
 
+## 0. 先安装到本地环境
+
+第一次使用这个仓库时，先在 Linux 环境里完成安装：
+
+```bash
+git clone <your-repo-url>
+cd resumable-agent-workflow
+bash scripts/install.sh
+```
+
+安装后建议立刻验证一次：
+
+```bash
+bash scripts/verify-install.sh
+```
+
+如果你只想先确认仓库打包面是否完整，可以先跑：
+
+```bash
+bash scripts/verify-install.sh --repo-only
+```
+
 ## 1. 在其他项目里怎么启动
 
 进入你的目标项目目录后启动 `opencode`：
@@ -48,6 +70,8 @@ opencode
 .opencode/state/
 .opencode/sessions/
 ```
+
+如果当前项目里还没有 `openspec/AGENTS.md`，并且本机装了 `openspec`，`/workflow-init` 还会顺手执行一次 `openspec init --tools opencode .`。已经初始化过的 workspace 不会重复生成。
 
 初始化后先做一次健康检查：
 

@@ -8,8 +8,11 @@
     "install:local": "bash scripts/install.sh",
     "install:dry-run": "bash scripts/install.sh --dry-run",
     "verify:repo": "bash scripts/verify-install.sh --repo-only",
-    "verify:install": "bash scripts/verify-install.sh"
+    "verify:install": "bash scripts/verify-install.sh",
+    "verify:smoke": "bun scripts/workflow-smoke.ts continuation-matrix && bun scripts/workflow-smoke.ts invalid-graph",
+    "verify:all": "npm run verify:repo && npm run verify:smoke"
   },
+  "license": "MIT",
   "engines": {
     "node": ">=20"
   }
