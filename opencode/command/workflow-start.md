@@ -2,7 +2,7 @@
 description: Start or resume the coordinator-style startup lane for a substantial new request
 ---
 
-Run `workflow_startup_runtime` as the primary workflow surface for the startup lane.
+Run `workflow_start_runtime` as the primary workflow surface for the startup lane.
 
 Operation model:
 - default invocation: `start-or-resume`
@@ -31,8 +31,8 @@ Required behavior:
   - startup-oriented `last_transition`
 - On `resume` or `status`, reload the saved startup state and present the stored startup summary instead of recomputing startup analysis.
 - persist startup as the first sealed context packet in the broader phase DAG lineage so downstream stages can continue without manual reframing.
-- On `confirm`, call `workflow_startup_runtime(confirm)` first, then immediately continue via `workflow_workflow_continue_runtime` or the stored next-stage command path. Do not require the user to manually retype the next command.
-- On `cancel`, call `workflow_startup_runtime(cancel)`, persist the cancelled state, and stop cleanly.
+- On `confirm`, call `workflow_start_runtime(confirm)` first, then follow exactly one continuation path in this order: use the embedded `continued` result when present, else call `workflow_continue_runtime`, else fall back to the stored next-stage command path. Do not require the user to manually retype the next command.
+- On `cancel`, call `workflow_start_runtime(cancel)`, persist the cancelled state, and stop cleanly.
 
 Execution rules:
 - Prefer the same brownfield context already captured in durable artifacts over asking the user to restate the request.

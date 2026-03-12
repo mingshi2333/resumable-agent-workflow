@@ -310,8 +310,10 @@ Clone the repo:
 
 ```bash
 git clone <your-repo-url>
-cd resumable-agent-workflow
+cd <repo-dir>
 ```
+
+Replace `<repo-dir>` with the directory name you actually cloned into.
 
 Install into your local environment:
 
@@ -331,6 +333,8 @@ After that, open a target project in `opencode` and initialize the local workflo
 /workflow-init
 /workflow-check
 ```
+
+`/workflow-init` now also bootstraps `openspec/` with `openspec init --tools opencode .` when the current workspace has not been initialized yet and the `openspec` binary is available. If OpenSpec is already present, it leaves the workspace as-is.
 
 ## Custom Install Paths
 
@@ -381,10 +385,22 @@ Repository-only verification:
 bash scripts/verify-install.sh --repo-only
 ```
 
+Equivalent package script:
+
+```bash
+npm run verify:repo
+```
+
 Installed-layout verification:
 
 ```bash
 bash scripts/verify-install.sh
+```
+
+Workflow runtime smoke coverage:
+
+```bash
+npm run verify:smoke
 ```
 
 ## Using It In Another Project
@@ -526,7 +542,8 @@ If you change any of these, reinstall or copy them again into your local config:
 Recommended local development loop:
 
 ```bash
-bash scripts/verify-install.sh --repo-only
+npm run verify:repo
+npm run verify:smoke
 bash scripts/install.sh
 bash scripts/verify-install.sh
 ```

@@ -1,44 +1,26 @@
 import { tool } from "@opencode-ai/plugin"
+import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { promisify } from "node:util"
+import {
+  approvalStatuses,
+  archiveStatuses,
+  dispatchRequestStatuses,
+  handoffStatuses,
+  reviewStatuses,
+  reviewTypes,
+  sessionFields,
+  sessionKinds,
+  sessionModes,
+  sessionProviders,
+  sessionStates,
+  startupStatuses,
+  verificationStatuses,
+} from "./workflow-model.js"
 
-const handoffStatuses = [
-  "ready-for-planning",
-  "planned",
-  "review-required",
-  "ready-for-execution",
-  "ready-for-verification",
-  "verifying",
-  "ready-for-archive",
-  "archiving",
-  "executing",
-  "completed",
-  "blocked",
-] as const
-
-const approvalStatuses = ["not-reviewed", "approved", "changes-requested", "waived"] as const
-const startupStatuses = ["classified", "awaiting-confirmation", "confirmed", "cancelled"] as const
-const verificationStatuses = ["passed", "failed", "expired", "cancelled"] as const
-const archiveStatuses = ["completed", "failed", "expired", "cancelled"] as const
-
-const reviewStatuses = ["approved", "changes-requested", "waived", "aborted", "expired", "cancelled"] as const
-const reviewTypes = ["design", "proposal", "plan", "tasks", "code"] as const
-const sessionKinds = ["interview", "planning", "review", "execution", "verification", "archive"] as const
-const sessionModes = ["sync", "async"] as const
-const sessionProviders = ["plannotator", "opencode", "external"] as const
-const sessionStates = [
-  "queued",
-  "awaiting-input",
-  "awaiting-reviewer",
-  "in-progress",
-  "completed",
-  "expired",
-  "cancelled",
-  "failed",
-] as const
-const dispatchRequestStatuses = ["pending", "queued", "in-progress", "completed", "blocked", "failed", "cancelled"] as const
-const sessionFields = ["planning_session", "review_session", "execution_session", "verification_session", "archive_session"] as const
+const execFileAsync = promisify(execFile)
 
 const sessionSchema = tool.schema.object({
   kind: tool.schema.enum(sessionKinds),
@@ -121,6 +103,83 @@ async function textFileExists(filePath: string) {
     return true
   } catch {
     return false
+  }
+}
+
+async function pathExists(filePath: string) {
+  try {
+    await stat(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForPlanningArtifacts(
+  canonicalPlanPath: string,
+  canonicalTaskGraphPath: string,
+  expected: {
+    consensusPlanPath: string
+    workflowId: string | null
+    slug: string
+    nodeCount: number
+    lintOk: boolean
+  },
+  attempts = 5,
+  delayMs = 50
+) {
+  let lastError = "planning artifacts were not readable after write"
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const planContent = await readFile(canonicalPlanPath, "utf8").catch(() => null)
+    if (!planContent) {
+      lastError = `missing consensus plan after write: ${canonicalPlanPath}`
+      if (attempt < attempts) await delay(delayMs)
+      continue
+    }
+
+    const taskGraphData = await readJsonFile<Record<string, unknown>>(canonicalTaskGraphPath)
+    if (!taskGraphData) {
+      lastError = `missing task graph after write: ${canonicalTaskGraphPath}`
+      if (attempt < attempts) await delay(delayMs)
+      continue
+    }
+
+    const lint = (taskGraphData.lint as Record<string, unknown> | undefined) || null
+    const matchesPlanPath = taskGraphData.source_plan_path === expected.consensusPlanPath
+    const matchesWorkflowId = expected.workflowId === null || taskGraphData.workflow_id === expected.workflowId
+    const matchesSlug = taskGraphData.slug === expected.slug
+    const matchesNodeCount = taskGraphData.node_count === expected.nodeCount
+    const matchesLint = !expected.lintOk || lint?.ok === true
+    if (matchesPlanPath && matchesWorkflowId && matchesSlug && matchesNodeCount && matchesLint) {
+      return {
+        ok: true,
+        attempts: attempt,
+        plan_bytes: planContent.length,
+        task_graph_path: canonicalTaskGraphPath,
+      }
+    }
+
+    lastError = [
+      !matchesPlanPath ? `task graph source_plan_path mismatch: expected ${expected.consensusPlanPath}` : null,
+      !matchesWorkflowId ? `task graph workflow_id mismatch: expected ${expected.workflowId}` : null,
+      !matchesSlug ? `task graph slug mismatch: expected ${expected.slug}` : null,
+      !matchesNodeCount ? `task graph node_count mismatch: expected ${expected.nodeCount}` : null,
+      !matchesLint ? "task graph lint record was not durably readable" : null,
+    ].filter(Boolean).join("; ")
+    if (attempt < attempts) await delay(delayMs)
+  }
+
+  return {
+    ok: false,
+    attempts,
+    error: lastError,
+    consensus_plan_path: canonicalPlanPath,
+    task_graph_path: canonicalTaskGraphPath,
   }
 }
 
@@ -499,6 +558,83 @@ function buildTaskGraph(planContent: string, handoffData: Record<string, unknown
   }
 }
 
+function uniqueStrings(values: Array<string | null | undefined>) {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.trim().length > 0))]
+}
+
+function lintTaskGraph(taskGraph: Record<string, unknown> | null) {
+  const nodes = Array.isArray(taskGraph?.nodes) ? (taskGraph?.nodes as Array<Record<string, unknown>>) : []
+  const nodeIds = nodes.map((node) => String(node.id || "")).filter(Boolean)
+  const nodeIdSet = new Set(nodeIds)
+  const duplicateNodeIds = uniqueStrings(nodeIds.filter((nodeId, index) => nodeIds.indexOf(nodeId) !== index))
+  const duplicateDependencyIds: string[] = []
+  const missingDependencyIds: string[] = []
+  const missingDependencyNodeIds: string[] = []
+  const selfDependencyNodeIds: string[] = []
+
+  const adjacency = new Map<string, string[]>()
+  const indegree = new Map<string, number>()
+  for (const nodeId of nodeIds) {
+    adjacency.set(nodeId, [])
+    indegree.set(nodeId, 0)
+  }
+
+  for (const node of nodes) {
+    const nodeId = String(node.id || "")
+    if (!nodeId) continue
+    const dependsOn = Array.isArray(node.depends_on) ? (node.depends_on as string[]) : []
+    const seenDeps = new Set<string>()
+    for (const dep of dependsOn) {
+      if (seenDeps.has(dep)) duplicateDependencyIds.push(`${nodeId}:${dep}`)
+      seenDeps.add(dep)
+      if (dep === nodeId) selfDependencyNodeIds.push(nodeId)
+      if (!nodeIdSet.has(dep)) {
+        missingDependencyIds.push(dep)
+        missingDependencyNodeIds.push(nodeId)
+        continue
+      }
+      adjacency.get(dep)?.push(nodeId)
+      indegree.set(nodeId, (indegree.get(nodeId) || 0) + 1)
+    }
+  }
+
+  const queue = [...nodeIds.filter((nodeId) => (indegree.get(nodeId) || 0) === 0)]
+  let visitedCount = 0
+  while (queue.length > 0) {
+    const nodeId = queue.shift() as string
+    visitedCount += 1
+    for (const target of adjacency.get(nodeId) || []) {
+      const nextIndegree = (indegree.get(target) || 0) - 1
+      indegree.set(target, nextIndegree)
+      if (nextIndegree === 0) queue.push(target)
+    }
+  }
+
+  const cycleNodeIds = uniqueStrings(
+    nodeIds.filter((nodeId) => (indegree.get(nodeId) || 0) > 0)
+  )
+
+  const invalidNodeIds = uniqueStrings([...missingDependencyNodeIds, ...selfDependencyNodeIds, ...cycleNodeIds])
+
+  return {
+    ok:
+      duplicateNodeIds.length === 0 &&
+      duplicateDependencyIds.length === 0 &&
+      missingDependencyNodeIds.length === 0 &&
+      selfDependencyNodeIds.length === 0 &&
+      cycleNodeIds.length === 0,
+    node_count: nodes.length,
+    duplicate_node_ids: duplicateNodeIds,
+    duplicate_dependency_ids: uniqueStrings(duplicateDependencyIds),
+    missing_dependency_ids: uniqueStrings(missingDependencyIds),
+    missing_dependency_node_ids: uniqueStrings(missingDependencyNodeIds),
+    self_dependency_node_ids: uniqueStrings(selfDependencyNodeIds),
+    cycle_node_ids: cycleNodeIds,
+    invalid_node_ids: invalidNodeIds,
+    visited_node_count: visitedCount,
+  }
+}
+
 function draftConsensusPlanTemplate(handoffData: Record<string, unknown>, generatedAt: string) {
   const slug = ((handoffData.slug as string | undefined) || "workflow").trim() || "workflow"
   const title = slug
@@ -551,24 +687,38 @@ async function readDispatchArtifactFile(root: string, dispatchPlanPath: string |
 function deriveTaskGraphExecutionState(taskGraph: Record<string, unknown> | null, completedNodeIds: string[] = []) {
   const nodes = Array.isArray(taskGraph?.nodes) ? (taskGraph?.nodes as Array<Record<string, unknown>>) : []
   const completed = new Set(completedNodeIds)
+  const lint = lintTaskGraph(taskGraph)
+  const nodeIdSet = new Set(nodes.map((node) => String(node.id || "")).filter(Boolean))
+  const invalidNodeIdSet = new Set(lint.invalid_node_ids)
   const readyNodeIds: string[] = []
   const remainingNodeIds: string[] = []
   const blockedNodeIds: string[] = []
+  const waitingNodeIds: string[] = []
+  const missingDependencyNodeIds: string[] = []
+  const invalidNodeIds: string[] = []
   const readyParallelGroups: Record<string, string[]> = {}
 
   for (const node of nodes) {
     const nodeId = (node.id as string | undefined) || ""
     if (!nodeId || completed.has(nodeId)) continue
     const dependsOn = Array.isArray(node.depends_on) ? (node.depends_on as string[]) : []
-    const allDepsMet = dependsOn.every((dep) => completed.has(dep))
+    const missingDeps = dependsOn.filter((dep) => !nodeIdSet.has(dep))
+    const waitingDeps = dependsOn.filter((dep) => nodeIdSet.has(dep) && !completed.has(dep))
     remainingNodeIds.push(nodeId)
-    if (allDepsMet) {
+    if (invalidNodeIdSet.has(nodeId)) {
+      blockedNodeIds.push(nodeId)
+      invalidNodeIds.push(nodeId)
+      if (missingDeps.length > 0) missingDependencyNodeIds.push(nodeId)
+      continue
+    }
+    if (waitingDeps.length === 0) {
       readyNodeIds.push(nodeId)
       const group = ((node.parallel_group as string | undefined) || "serial").trim() || "serial"
       if (!readyParallelGroups[group]) readyParallelGroups[group] = []
       readyParallelGroups[group].push(nodeId)
     } else {
       blockedNodeIds.push(nodeId)
+      waitingNodeIds.push(nodeId)
     }
   }
 
@@ -578,6 +728,15 @@ function deriveTaskGraphExecutionState(taskGraph: Record<string, unknown> | null
     ready_node_ids: readyNodeIds,
     remaining_node_ids: remainingNodeIds,
     blocked_node_ids: blockedNodeIds,
+    waiting_node_ids: waitingNodeIds,
+    invalid_node_ids: uniqueStrings(invalidNodeIds),
+    missing_dependency_node_ids: uniqueStrings(missingDependencyNodeIds),
+    missing_dependency_ids: lint.missing_dependency_ids,
+    cycle_node_ids: lint.cycle_node_ids,
+    duplicate_node_ids: lint.duplicate_node_ids,
+    duplicate_dependency_ids: lint.duplicate_dependency_ids,
+    graph_valid: lint.ok,
+    graph_lint: lint,
     ready_parallel_groups: readyParallelGroups,
   }
 }
@@ -987,7 +1146,7 @@ async function resolveWorkflowContinuation(
         handoff_status: handoffStatus,
         stage: "deep-interview",
         operation: "resume",
-        can_continue: false,
+        can_continue: true,
         reason: "startup confirmed and ready for deep interview",
         artifact_path: handoffRel,
         command: preferredStartupCommand,
@@ -1154,7 +1313,62 @@ export const init = tool({
     for (const dir of dirs) {
       await mkdir(path.join(root, dir), { recursive: true })
     }
-    return JSON.stringify({ ok: true, root, dirs }, null, 2)
+
+    const openspecAgentsPath = path.join(root, "openspec", "AGENTS.md")
+    const openspecProjectPath = path.join(root, "openspec", "project.md")
+    const openspecDirPath = path.join(root, "openspec")
+    let ok = true
+    let openspec = {
+      initialized: false,
+      already_present: false,
+      skipped: false,
+      available: false,
+      command: "openspec init --tools opencode .",
+      reason: null as string | null,
+    }
+
+    const openspecAlreadyPresent =
+      (await textFileExists(openspecAgentsPath)) ||
+      (await textFileExists(openspecProjectPath)) ||
+      (await pathExists(openspecDirPath))
+
+    if (openspecAlreadyPresent) {
+      openspec = {
+        ...openspec,
+        initialized: true,
+        already_present: true,
+        available: true,
+        reason: "openspec already initialized in this workspace",
+      }
+    } else {
+      try {
+        await execFileAsync("openspec", ["init", "--tools", "opencode", "."], { cwd: root })
+        const initialized = (await textFileExists(openspecAgentsPath)) || (await textFileExists(openspecProjectPath))
+        openspec = {
+          ...openspec,
+          initialized,
+          available: initialized,
+          reason: initialized
+            ? "openspec initialized for opencode during workflow init"
+            : "openspec init completed but expected artifacts were not created",
+        }
+        if (!initialized) ok = false
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const binaryMissing = /ENOENT|not found/i.test(message)
+        openspec = {
+          ...openspec,
+          skipped: binaryMissing,
+          available: !binaryMissing,
+          reason: binaryMissing
+            ? "openspec binary not available; skipped openspec bootstrap"
+            : `openspec init failed: ${message}`,
+        }
+        if (!binaryMissing) ok = false
+      }
+    }
+
+    return JSON.stringify({ ok, root, dirs, openspec }, null, 2)
   },
 })
 
@@ -1241,7 +1455,7 @@ export const startup_state = tool({
   },
 })
 
-export const startup_runtime = tool({
+export const workflow_start_runtime = tool({
   description: "Create, resume, confirm, cancel, or inspect workflow startup state",
   args: {
     operation: tool.schema.enum(["start", "resume", "confirm", "cancel", "status"] as const),
@@ -1447,6 +1661,17 @@ export const startup_runtime = tool({
     })
     await writeJsonFile(handoffPath, nextHandoff)
 
+    const continued = args.operation === "confirm"
+      ? JSON.parse(
+          await workflow_continue_runtime.execute(
+            {
+              handoff_path: handoffRel,
+            },
+            context
+          )
+        )
+      : null
+
     return JSON.stringify(
       {
         ok: true,
@@ -1458,6 +1683,7 @@ export const startup_runtime = tool({
         next_stage: recommendedNextStage,
         next_command: nextCommand,
         can_continue: args.operation === "confirm",
+        continued,
       },
       null,
       2
@@ -1738,8 +1964,36 @@ export const execution_dispatch_result = tool({
       const noPending = effectiveDispatchSummary.pending_request_ids.length === 0
       const hasBlocked = effectiveDispatchSummary.blocked_request_ids.length > 0
       const noRemaining = !!effectiveGraphState && effectiveGraphState.remaining_node_ids.length === 0
+      const invalidGraph = !!effectiveGraphState && effectiveGraphState.graph_valid === false
 
-      if (noPending && hasBlocked) {
+      if (invalidGraph) {
+        terminalExecution = JSON.parse(
+          await autopilot_runtime.execute(
+            {
+              operation: "result",
+              handoff_path: path.relative(root, handoffPath),
+              terminal_state: "failed",
+              phase: "blocked",
+              result_summary: "execution stopped because the task graph is invalid",
+              blocking_reason:
+                `invalid task graph: ${[
+                  effectiveGraphState.missing_dependency_node_ids?.length > 0
+                    ? `missing deps on ${effectiveGraphState.missing_dependency_node_ids.join(", ")}`
+                    : null,
+                  effectiveGraphState.cycle_node_ids?.length > 0
+                    ? `cycles ${effectiveGraphState.cycle_node_ids.join(", ")}`
+                    : null,
+                  effectiveGraphState.duplicate_dependency_ids?.length > 0
+                    ? `duplicate deps ${effectiveGraphState.duplicate_dependency_ids.join(", ")}`
+                    : null,
+                ].filter(Boolean).join("; ")}`,
+              verification_commands: args.verification_commands || [],
+              verification_artifacts: args.verification_artifacts || [],
+            },
+            context
+          )
+        ) as Record<string, unknown>
+      } else if (noPending && hasBlocked) {
         terminalExecution = JSON.parse(
           await autopilot_runtime.execute(
             {
@@ -2576,7 +2830,10 @@ export const ralplan_runtime = tool({
 
       let finalPlanPath: string | null = null
       let finalTaskGraphPath: string | null = null
-      let taskGraph: ReturnType<typeof buildTaskGraph> | null = null
+      let taskGraph: (ReturnType<typeof buildTaskGraph> & { lint?: ReturnType<typeof lintTaskGraph> }) | null = null
+      let taskGraphLint: ReturnType<typeof lintTaskGraph> | null = null
+      let planningArtifactCheck: Awaited<ReturnType<typeof waitForPlanningArtifacts>> | null = null
+      let effectiveTerminalState = args.terminal_state
 
       if (args.terminal_state === "completed") {
         let finalPlanContent = args.final_plan_content || null
@@ -2590,23 +2847,45 @@ export const ralplan_runtime = tool({
         }
 
         taskGraph = buildTaskGraph(finalPlanContent || "# Consensus Plan\n", handoffData, path.relative(root, canonicalPlanPath), now)
+        taskGraphLint = lintTaskGraph(taskGraph)
+        taskGraph = {
+          ...taskGraph,
+          lint: taskGraphLint,
+        } as ReturnType<typeof buildTaskGraph> & { lint?: ReturnType<typeof lintTaskGraph> }
         await writeJsonFile(canonicalTaskGraphPath, taskGraph)
         finalPlanPath = path.relative(root, canonicalPlanPath)
         finalTaskGraphPath = path.relative(root, canonicalTaskGraphPath)
+        if (!taskGraphLint.ok) effectiveTerminalState = "failed"
+        planningArtifactCheck = await waitForPlanningArtifacts(canonicalPlanPath, canonicalTaskGraphPath, {
+          consensusPlanPath: finalPlanPath,
+          workflowId: handoffData.workflow_id ? String(handoffData.workflow_id) : null,
+          slug: String((handoffData.slug as string) || "workflow"),
+          nodeCount: taskGraph.node_count,
+          lintOk: taskGraphLint.ok,
+        })
+        if (!planningArtifactCheck.ok) effectiveTerminalState = "failed"
       }
 
       const terminalSession = {
         ...existing,
-        state: args.terminal_state,
+        state: effectiveTerminalState,
         last_activity_at: now,
         session_url: args.session_url !== undefined ? args.session_url : existing.session_url,
           metadata: {
             ...existing.metadata,
-            phase: args.phase || (args.terminal_state === "completed" ? "done" : "blocked"),
+            phase: args.phase || (effectiveTerminalState === "completed" ? "done" : "blocked"),
             consensus_plan_path: finalPlanPath,
             task_graph_path: finalTaskGraphPath,
             task_graph_node_count: taskGraph?.node_count || 0,
-            summary: args.summary || null,
+            task_graph_lint: taskGraphLint,
+            planning_artifact_check: planningArtifactCheck,
+            summary:
+              args.summary ||
+              (!taskGraphLint?.ok
+                ? "planning result rejected because the materialized task graph is invalid"
+                : !planningArtifactCheck?.ok
+                  ? "planning result rejected because written planning artifacts were not durably readable"
+                  : null),
             context_path: (existing.metadata.context_path as string | undefined) || planningContextPath,
             delegate_status: "completed",
             delegate_task_id: (existing.metadata.delegate_task_id as string | undefined) || null,
@@ -2647,18 +2926,23 @@ export const ralplan_runtime = tool({
         consensus_plan_path: finalPlanPath,
         task_graph_path: finalTaskGraphPath,
         plan_path: handoffData.plan_path || path.relative(root, canonicalPlanPath),
-        handoff_status: args.terminal_state === "completed" ? "review-required" : "planned",
-        last_transition: `ralplan result ${args.terminal_state}`,
+        handoff_status: effectiveTerminalState === "completed" ? "review-required" : "planned",
+        last_transition:
+          taskGraphLint && !taskGraphLint.ok
+            ? "ralplan result failed invalid-task-graph"
+            : planningArtifactCheck && !planningArtifactCheck.ok
+              ? "ralplan result failed artifact-readiness-check"
+            : `ralplan result ${effectiveTerminalState}`,
         planning_session: terminalSession,
-        preferred_next_stage: args.terminal_state === "completed" ? "review-bridge" : "ralplan",
+        preferred_next_stage: effectiveTerminalState === "completed" ? "review-bridge" : "ralplan",
         preferred_next_command:
-          args.terminal_state === "completed"
+          effectiveTerminalState === "completed"
             ? `/review-bridge ${path.relative(root, handoffPath)}`
             : `/ralplan ${path.relative(root, handoffPath)}`,
         generated_at: now,
       })
       await writeJsonFile(handoffPath, nextHandoff)
-      const continued = args.terminal_state === "completed"
+      const continued = effectiveTerminalState === "completed"
         ? JSON.parse(
             await workflow_continue_runtime.execute(
               {
@@ -2668,7 +2952,25 @@ export const ralplan_runtime = tool({
             )
           )
         : null
-      return JSON.stringify({ ok: true, operation: args.operation, handoff: nextHandoff, continued }, null, 2)
+      const combinedOk = (taskGraphLint ? taskGraphLint.ok : true) && (planningArtifactCheck ? planningArtifactCheck.ok : true)
+      return JSON.stringify(
+        {
+          ok: combinedOk,
+          operation: args.operation,
+          handoff: nextHandoff,
+          continued,
+          task_graph_lint: taskGraphLint,
+          planning_artifact_check: planningArtifactCheck,
+          error:
+            taskGraphLint && !taskGraphLint.ok
+              ? "materialized task graph is invalid; planning result was not promoted"
+              : planningArtifactCheck && !planningArtifactCheck.ok
+                ? "planning artifacts were not durably readable after write; planning result was not promoted"
+              : null,
+        },
+        null,
+        2
+      )
     }
 
     const shouldReuse = !!existing && !isTerminalSessionState(existing.state)
@@ -2886,13 +3188,15 @@ export const autopilot_runtime = tool({
       computedReconcilePlan
     const dispatchSummary = summarizeDispatchRequests(dispatchRequests)
     const executionPhase = (existing?.metadata.phase as string | undefined) || args.phase || null
-    const executionContextPath = await writeStageContext(root, handoffData, "execution_session", {
-      execution_target: target,
-      task_graph_path: taskGraphPath,
-      dispatch_plan_path: dispatchPlanPath,
-      approved_artifact: handoffData.approved_artifact || null,
-      ready_batch_count: (dispatchPlan as Record<string, unknown>).ready_batch_count || 0,
-    })
+    const invalidGraphError = taskGraphData && graphState.graph_valid !== true
+      ? {
+          ok: false,
+          error: "invalid task graph; autopilot refused to start execution",
+          handoff_path: handoffPath,
+          task_graph_path: taskGraphPath,
+          task_graph_state: graphState,
+        }
+      : null
     const dispatchArtifact = materializeDispatchArtifact(
       handoffData,
       dispatchPlanPath || `.opencode/executions/dispatch-${(handoffData.slug as string) || "workflow"}.json`,
@@ -2905,11 +3209,7 @@ export const autopilot_runtime = tool({
       completedNodeIds,
       now
     )
-    await writeDispatchContexts(root, handoffData, dispatchRequests as ReturnType<typeof buildDispatchRequests>, {
-      execution_target: target,
-      task_graph_path: taskGraphPath,
-      approved_artifact: (handoffData.approved_artifact as string | undefined) || null,
-    })
+    let executionContextPath: string | null = null
     const nextExpectedInputFor = (session: ReturnType<typeof normalizeSessionSnapshot> | null) => {
       if (!session) return null
       if (session.state === "queued") return graphState.ready_node_ids.length > 0 ? "dispatch ready DAG nodes" : "execution kickoff"
@@ -2939,6 +3239,7 @@ export const autopilot_runtime = tool({
           session: existing,
           handoff_status: handoffData.handoff_status || null,
           approval_status: handoffData.approval_status || null,
+          invalid_graph: invalidGraphError,
           result_ready: !!existing && isTerminalSessionState(existing.state),
           next_expected_input: nextExpectedInputFor(existing),
           resume_hint: existing?.resume_command || null,
@@ -2965,6 +3266,7 @@ export const autopilot_runtime = tool({
             dispatch_requests: taskGraphData ? dispatchRequests : null,
             reconcile_plan: taskGraphData ? reconcilePlan : null,
             dispatch_summary: taskGraphData ? dispatchSummary : null,
+            invalid_graph: invalidGraphError,
             result_ready: !!existing && isTerminalSessionState(existing.state),
             session_id: existing?.session_id || null,
             session_status: existing?.state || null,
@@ -3061,11 +3363,29 @@ export const autopilot_runtime = tool({
           next_expected_input: null,
           resume_hint: terminalSession.resume_command,
           continued,
+          invalid_graph: invalidGraphError,
         },
         null,
         2
       )
     }
+
+    if (invalidGraphError) {
+      return JSON.stringify(invalidGraphError, null, 2)
+    }
+
+    executionContextPath = await writeStageContext(root, handoffData, "execution_session", {
+      execution_target: target,
+      task_graph_path: taskGraphPath,
+      dispatch_plan_path: dispatchPlanPath,
+      approved_artifact: handoffData.approved_artifact || null,
+      ready_batch_count: (dispatchPlan as Record<string, unknown>).ready_batch_count || 0,
+    })
+    await writeDispatchContexts(root, handoffData, dispatchRequests as ReturnType<typeof buildDispatchRequests>, {
+      execution_target: target,
+      task_graph_path: taskGraphPath,
+      approved_artifact: (handoffData.approved_artifact as string | undefined) || null,
+    })
 
     const shouldReuse = !!existing && !isTerminalSessionState(existing.state)
     if (args.operation === "resume" && !shouldReuse) {
@@ -3190,7 +3510,7 @@ export const autopilot_runtime = tool({
   },
 })
 
-export const verify_runtime = tool({
+export const workflow_verify_runtime = tool({
   description: "Run structured verification session orchestration against workflow artifacts",
   args: {
     operation: tool.schema.enum(["start", "resume", "status", "result"] as const),
@@ -3461,7 +3781,7 @@ export const verify_runtime = tool({
   },
 })
 
-export const archive_runtime = tool({
+export const workflow_archive_runtime = tool({
   description: "Run structured archive session orchestration against workflow artifacts",
   args: {
     operation: tool.schema.enum(["start", "resume", "status", "result"] as const),
@@ -3742,6 +4062,26 @@ export const workflow_continue_runtime = tool({
       return JSON.stringify({ ok: true, next, continued: result }, null, 2)
     }
 
+    if (nextState.stage === "deep-interview") {
+      return JSON.stringify(
+        {
+          ok: true,
+          next,
+          continued: {
+            ok: true,
+            stage: "deep-interview",
+            operation: nextState.operation,
+            handoff_path: nextState.artifact_path,
+            command: nextState.command,
+            requires_external_command: true,
+            reason: "deep-interview continues via the stored command path",
+          },
+        },
+        null,
+        2
+      )
+    }
+
     if (nextState.stage === "review-bridge") {
       const result = JSON.parse(
         await review_bridge_runtime.execute(
@@ -3772,7 +4112,7 @@ export const workflow_continue_runtime = tool({
 
     if (nextState.stage === "workflow-verify") {
       const result = JSON.parse(
-        await verify_runtime.execute(
+        await workflow_verify_runtime.execute(
           {
             operation: nextState.operation as "start" | "resume",
             handoff_path: nextState.artifact_path as string,
@@ -3785,7 +4125,7 @@ export const workflow_continue_runtime = tool({
 
     if (nextState.stage === "workflow-archive") {
       const result = JSON.parse(
-        await archive_runtime.execute(
+        await workflow_archive_runtime.execute(
           {
             operation: nextState.operation as "start" | "resume",
             handoff_path: nextState.artifact_path as string,
@@ -4119,6 +4459,19 @@ export const validate = tool({
           if (taskGraphData.schema_version !== "1") errors.push("task graph schema_version must be 1")
           if (typeof taskGraphData.workflow_id !== "string") errors.push("task graph workflow_id missing")
           if (typeof taskGraphData.slug !== "string") errors.push("task graph slug missing")
+          const taskGraphLint = lintTaskGraph(taskGraphData)
+          if (!taskGraphLint.ok) {
+            errors.push(
+              `task graph invalid: ${[
+                taskGraphLint.duplicate_node_ids.length > 0 ? `duplicate nodes ${taskGraphLint.duplicate_node_ids.join(", ")}` : null,
+                taskGraphLint.duplicate_dependency_ids.length > 0 ? `duplicate deps ${taskGraphLint.duplicate_dependency_ids.join(", ")}` : null,
+                taskGraphLint.missing_dependency_node_ids.length > 0
+                  ? `missing deps on ${taskGraphLint.missing_dependency_node_ids.join(", ")}`
+                  : null,
+                taskGraphLint.cycle_node_ids.length > 0 ? `cycles ${taskGraphLint.cycle_node_ids.join(", ")}` : null,
+              ].filter(Boolean).join("; ")}`
+            )
+          }
         }
       }
       if (handoffData.dispatch_plan_path && typeof handoffData.dispatch_plan_path === "string") {
@@ -4227,11 +4580,25 @@ export const validate = tool({
         errors.push("ready-for-archive requires a completed verification_session")
       }
       if (
+        handoffData.handoff_status === "ready-for-archive" &&
+        handoffArchiveSession &&
+        isPendingSessionState(handoffArchiveSession.state)
+      ) {
+        errors.push("ready-for-archive cannot have a still-pending archive_session")
+      }
+      if (
         handoffData.handoff_status === "archiving" &&
         handoffArchiveSession &&
         !isPendingSessionState(handoffArchiveSession.state)
       ) {
         errors.push("archiving handoff requires a pending archive_session")
+      }
+      if (
+        handoffData.handoff_status === "archiving" &&
+        handoffVerificationSession &&
+        (!isTerminalSessionState(handoffVerificationSession.state) || handoffVerificationSession.state !== "completed")
+      ) {
+        errors.push("archiving handoff requires a completed verification_session")
       }
       if (
         handoffData.handoff_status === "completed" &&
@@ -4352,6 +4719,345 @@ export const validate = tool({
             ? await readJsonFile<Record<string, unknown>>(resolvePath(root, handoffData.startup_state_path as string))
             : null)?.status as string | undefined) || null,
         review_status: reviewData?.status || null,
+      },
+      null,
+      2
+    )
+  },
+})
+
+export const smoke_continuation_matrix = tool({
+  description: "Run deterministic continuation-matrix coverage for workflow routing",
+  args: {},
+  async execute(_args, context) {
+    const root = baseDir(context)
+    const storeBase = ".opencode"
+    const now = "2026-03-12T00:00:00.000Z"
+    const assertions: Array<Record<string, unknown>> = []
+
+    await init.execute({}, context)
+
+    const recordAssertion = (name: string, actual: Record<string, unknown>, expected: Record<string, unknown>) => {
+      const mismatches = Object.entries(expected)
+        .filter(([key, value]) => actual[key] !== value)
+        .map(([key, value]) => `${key}: expected ${JSON.stringify(value)} got ${JSON.stringify(actual[key])}`)
+      assertions.push({ name, ok: mismatches.length === 0, mismatches, actual, expected })
+    }
+
+    const createHandoffFixture = async (slug: string, handoffData: Record<string, unknown>, extras?: {
+      startup?: Record<string, unknown>
+      review?: Record<string, unknown>
+      verification?: Record<string, unknown>
+      archive?: Record<string, unknown>
+    }) => {
+      const handoffRel = `${storeBase}/handoffs/handoff-${slug}.json`
+      const startupRel = `${storeBase}/state/startup-${slug}.json`
+      const reviewRel = `${storeBase}/reviews/review-${slug}.json`
+      const verificationRel = `${storeBase}/verifications/verification-${slug}.json`
+      const archiveRel = `${storeBase}/archives/archive-${slug}.json`
+      if (extras?.startup) await writeJsonFile(resolvePath(root, startupRel), extras.startup)
+      if (extras?.review) await writeJsonFile(resolvePath(root, reviewRel), extras.review)
+      if (extras?.verification) await writeJsonFile(resolvePath(root, verificationRel), extras.verification)
+      if (extras?.archive) await writeJsonFile(resolvePath(root, archiveRel), extras.archive)
+      await writeJsonFile(resolvePath(root, handoffRel), attachPhaseGraph(handoffData))
+      return { handoffRel, startupRel, reviewRel, verificationRel, archiveRel }
+    }
+
+    const startupSlug = "continuation-startup-ralplan"
+    const startupHandoffRel = `${storeBase}/handoffs/handoff-${startupSlug}.json`
+    await workflow_start_runtime.execute(
+      {
+        operation: "start",
+        handoff_path: startupHandoffRel,
+        workflow_id: startupSlug,
+        slug: startupSlug,
+        request_text: "startup continuation matrix",
+        summary_source: "continuation-matrix",
+        recommended_next_stage: "ralplan",
+        generated_at: now,
+      },
+      context
+    )
+    const confirmedStartup = JSON.parse(
+      await workflow_start_runtime.execute(
+        {
+          operation: "confirm",
+          handoff_path: startupHandoffRel,
+          generated_at: now,
+        },
+        context
+      )
+    ) as Record<string, unknown>
+    const confirmedContinuation = (confirmedStartup.continued as Record<string, unknown> | undefined) || {}
+    const confirmedNext = (confirmedContinuation.next as Record<string, unknown> | undefined) || {}
+    recordAssertion("startup-confirm-ralplan", confirmedNext, {
+      stage: "ralplan",
+      can_continue: true,
+      command: `/ralplan ${startupHandoffRel}`,
+    })
+
+    const deepInterviewSlug = "continuation-startup-deep"
+    const deepInterviewFixture = await createHandoffFixture(
+      deepInterviewSlug,
+      {
+        schema_version: "1",
+        workflow_id: deepInterviewSlug,
+        slug: deepInterviewSlug,
+        stage: "workflow-start",
+        handoff_status: "ready-for-planning",
+        startup_state_path: `${storeBase}/state/startup-${deepInterviewSlug}.json`,
+        preferred_next_stage: "deep-interview",
+        preferred_next_command: `/deep-interview ${storeBase}/handoffs/handoff-${deepInterviewSlug}.json`,
+        review_required_before_execution: true,
+        approval_status: "not-reviewed",
+        last_transition: "startup confirmed",
+        generated_at: now,
+      },
+      {
+        startup: {
+          schema_version: "1",
+          workflow_id: deepInterviewSlug,
+          slug: deepInterviewSlug,
+          request_text: "deep interview continuation",
+          created_at: now,
+          status: "confirmed",
+          startup_brief: {
+            goal_summary: "deep interview continuation",
+            codebase_context: [],
+            likely_file_targets: [],
+            risks: [],
+            recommended_next_stage: "deep-interview",
+          },
+          confirmation: { required: true, asked_at: now, decision: "confirmed", decided_at: now },
+          resume: {
+            handoff_path: `${storeBase}/handoffs/handoff-${deepInterviewSlug}.json`,
+            next_command_on_confirm: `/deep-interview ${storeBase}/handoffs/handoff-${deepInterviewSlug}.json`,
+            summary_source: "continuation-matrix",
+          },
+          generated_at: now,
+        },
+      }
+    )
+    const deepInterviewNext = await resolveWorkflowContinuation(root, { handoff_path: deepInterviewFixture.handoffRel })
+    recordAssertion("startup-confirm-deep-interview", deepInterviewNext as Record<string, unknown>, {
+      stage: "deep-interview",
+      can_continue: true,
+      command: `/deep-interview ${deepInterviewFixture.handoffRel}`,
+    })
+    const deepInterviewContinued = JSON.parse(
+      await workflow_continue_runtime.execute({ handoff_path: deepInterviewFixture.handoffRel }, context)
+    ) as Record<string, unknown>
+    recordAssertion(
+      "workflow-continue-deep-interview",
+      ((deepInterviewContinued.continued as Record<string, unknown> | undefined) || {}),
+      {
+        stage: "deep-interview",
+        requires_external_command: true,
+        command: `/deep-interview ${deepInterviewFixture.handoffRel}`,
+      }
+    )
+
+    const reviewSlug = "continuation-review"
+    const reviewFixture = await createHandoffFixture(
+      reviewSlug,
+      {
+        schema_version: "1",
+        workflow_id: reviewSlug,
+        slug: reviewSlug,
+        stage: "ralplan",
+        handoff_status: "review-required",
+        review_path: `${storeBase}/reviews/review-${reviewSlug}.json`,
+        preferred_next_stage: "review-bridge",
+        preferred_next_command: `/review-bridge ${storeBase}/handoffs/handoff-${reviewSlug}.json`,
+        review_required_before_execution: true,
+        approval_status: "not-reviewed",
+        last_transition: "review required",
+        generated_at: now,
+      },
+      {
+        review: {
+          schema_version: "1",
+          workflow_id: reviewSlug,
+          slug: reviewSlug,
+          review_target: ".opencode/plans/consensus-continuation-review.md",
+          review_type: "plan",
+          status: "changes-requested",
+          blocking_issues: [],
+          notes: [],
+          generated_at: now,
+        },
+      }
+    )
+    recordAssertion(
+      "review-required",
+      await resolveWorkflowContinuation(root, { handoff_path: reviewFixture.handoffRel }) as Record<string, unknown>,
+      { stage: "review-bridge", can_continue: true, command: `/review-bridge ${reviewFixture.handoffRel}` }
+    )
+
+    const executionSlug = "continuation-execution"
+    const executionFixture = await createHandoffFixture(
+      executionSlug,
+      {
+        schema_version: "1",
+        workflow_id: executionSlug,
+        slug: executionSlug,
+        stage: "review-bridge",
+        handoff_status: "ready-for-execution",
+        review_path: `${storeBase}/reviews/review-${executionSlug}.json`,
+        approved_artifact: ".opencode/plans/consensus-continuation-execution.md",
+        preferred_next_stage: "autopilot",
+        preferred_next_command: `/autopilot ${storeBase}/reviews/review-${executionSlug}.json`,
+        review_required_before_execution: true,
+        approval_status: "approved",
+        last_transition: "ready for execution",
+        generated_at: now,
+      },
+      {
+        review: {
+          schema_version: "1",
+          workflow_id: executionSlug,
+          slug: executionSlug,
+          review_target: ".opencode/plans/consensus-continuation-execution.md",
+          review_type: "plan",
+          status: "approved",
+          approved_artifact: ".opencode/plans/consensus-continuation-execution.md",
+          blocking_issues: [],
+          notes: [],
+          generated_at: now,
+        },
+      }
+    )
+    recordAssertion(
+      "ready-for-execution",
+      await resolveWorkflowContinuation(root, { handoff_path: executionFixture.handoffRel }) as Record<string, unknown>,
+      { stage: "autopilot", can_continue: true, command: `/autopilot ${executionFixture.reviewRel}` }
+    )
+
+    const verificationSlug = "continuation-verification"
+    const verificationFixture = await createHandoffFixture(
+      verificationSlug,
+      {
+        schema_version: "1",
+        workflow_id: verificationSlug,
+        slug: verificationSlug,
+        stage: "autopilot",
+        handoff_status: "ready-for-verification",
+        verification_path: `${storeBase}/verifications/verification-${verificationSlug}.json`,
+        preferred_next_stage: "workflow-verify",
+        preferred_next_command: `/workflow-verify ${storeBase}/handoffs/handoff-${verificationSlug}.json`,
+        review_required_before_execution: true,
+        approval_status: "approved",
+        last_transition: "ready for verification",
+        generated_at: now,
+      },
+      {
+        verification: {
+          schema_version: "1",
+          workflow_id: verificationSlug,
+          slug: verificationSlug,
+          status: "failed",
+          blocking_issues: [],
+          notes: [],
+          generated_at: now,
+        },
+      }
+    )
+    recordAssertion(
+      "ready-for-verification",
+      await resolveWorkflowContinuation(root, { handoff_path: verificationFixture.handoffRel }) as Record<string, unknown>,
+      { stage: "workflow-verify", can_continue: true, command: `/workflow-verify ${verificationFixture.handoffRel}` }
+    )
+
+    const archiveSlug = "continuation-archive"
+    const archiveFixture = await createHandoffFixture(
+      archiveSlug,
+      {
+        schema_version: "1",
+        workflow_id: archiveSlug,
+        slug: archiveSlug,
+        stage: "workflow-verify",
+        handoff_status: "ready-for-archive",
+        verification_path: `${storeBase}/verifications/verification-${archiveSlug}.json`,
+        archive_path: `${storeBase}/archives/archive-${archiveSlug}.json`,
+        preferred_next_stage: "workflow-archive",
+        preferred_next_command: `/workflow-archive ${storeBase}/handoffs/handoff-${archiveSlug}.json`,
+        review_required_before_execution: true,
+        approval_status: "approved",
+        last_transition: "ready for archive",
+        generated_at: now,
+      },
+      {
+        verification: {
+          schema_version: "1",
+          workflow_id: archiveSlug,
+          slug: archiveSlug,
+          status: "passed",
+          blocking_issues: [],
+          notes: [],
+          generated_at: now,
+        },
+        archive: {
+          schema_version: "1",
+          workflow_id: archiveSlug,
+          slug: archiveSlug,
+          status: "failed",
+          summary: null,
+          notes: [],
+          generated_at: now,
+        },
+      }
+    )
+    recordAssertion(
+      "ready-for-archive",
+      await resolveWorkflowContinuation(root, { handoff_path: archiveFixture.handoffRel }) as Record<string, unknown>,
+      { stage: "workflow-archive", can_continue: true, command: `/workflow-archive ${archiveFixture.handoffRel}` }
+    )
+
+    const blockedFixture = await createHandoffFixture("continuation-blocked", {
+      schema_version: "1",
+      workflow_id: "continuation-blocked",
+      slug: "continuation-blocked",
+      stage: "autopilot",
+      handoff_status: "blocked",
+      preferred_next_stage: "autopilot",
+      preferred_next_command: `/autopilot ${storeBase}/handoffs/handoff-continuation-blocked.json`,
+      review_required_before_execution: true,
+      approval_status: "approved",
+      last_transition: "blocked",
+      generated_at: now,
+    })
+    recordAssertion(
+      "blocked",
+      await resolveWorkflowContinuation(root, { handoff_path: blockedFixture.handoffRel }) as Record<string, unknown>,
+      { stage: null, can_continue: false, reason: "workflow is blocked" }
+    )
+
+    const completedFixture = await createHandoffFixture("continuation-completed", {
+      schema_version: "1",
+      workflow_id: "continuation-completed",
+      slug: "continuation-completed",
+      stage: "workflow-archive",
+      handoff_status: "completed",
+      preferred_next_stage: "done",
+      preferred_next_command: "",
+      review_required_before_execution: true,
+      approval_status: "approved",
+      last_transition: "completed",
+      generated_at: now,
+    })
+    recordAssertion(
+      "completed",
+      await resolveWorkflowContinuation(root, { handoff_path: completedFixture.handoffRel }) as Record<string, unknown>,
+      { stage: "done", can_continue: false, reason: "workflow already completed" }
+    )
+
+    const ok = assertions.every((assertion) => assertion.ok === true)
+    return JSON.stringify(
+      {
+        ok,
+        assertion_count: assertions.length,
+        assertions,
+        first_failure: assertions.find((assertion) => assertion.ok !== true) || null,
       },
       null,
       2
@@ -4983,7 +5689,7 @@ export const smoke_e2e = tool({
       )
     ) as Record<string, unknown>
     const verifyDone = JSON.parse(
-      await verify_runtime.execute(
+      await workflow_verify_runtime.execute(
         {
           operation: "result",
           handoff_path: ".opencode/handoffs/handoff-workflow-e2e-smoke.json",
@@ -5004,7 +5710,7 @@ export const smoke_e2e = tool({
       )
     ) as Record<string, unknown>
     const archiveDone = JSON.parse(
-      await archive_runtime.execute(
+      await workflow_archive_runtime.execute(
         {
           operation: "result",
           handoff_path: ".opencode/handoffs/handoff-workflow-e2e-smoke.json",
